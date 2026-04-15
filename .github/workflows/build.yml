@@ -1,0 +1,106 @@
+name: OpenWrt Raspberry Pi 4 Build
+
+on:
+  workflow_dispatch:
+
+env:
+  OPENWRT_TAG: v23.05.5
+  FORCE_UNSAFE_CONFIGURE: 1
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container:
+      image: ubuntu:20.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Bootstrap container
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends git ca-certificates
+
+      - name: Checkout workspace (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk \
+            gettext git libncurses-dev \
+            libssl-dev python3-setuptools rsync unzip zlib1g-dev \
+            file wget texinfo libelf-dev libzstd-dev
+
+      - name: Clone OpenWrt source
+        run: |
+          git clone --depth 1 --branch ${{ env.OPENWRT_TAG }} \
+            https://github.com/openwrt/openwrt.git openwrt
+
+      - name: Update & install feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Add luci-theme-netcomm package
+        run: cp -r upstream/luci-theme-netcomm openwrt/package/luci-theme-netcomm
+
+      - name: Add luci-app-watchdog package
+        run: cp -r upstream/luci-app-watchdog openwrt/package/luci-app-watchdog
+
+      - name: Add luci-app-congestion-monitor package
+        run: cp -r upstream/luci-app-congestion-monitor openwrt/package/luci-app-congestion-monitor
+
+      - name: Add luci-app-intruder-alert package
+        run: cp -r upstream/luci-app-intruder-alert openwrt/package/luci-app-intruder-alert
+
+      - name: Add rest-api-app package
+        run: cp -r upstream/rest-api-app openwrt/package/rest-api-app
+
+      - name: Apply filesystem overlay
+        run: cp -r upstream/files/. openwrt/files/
+
+      - name: Apply build config
+        working-directory: openwrt
+        run: |
+          cp ../.config .config
+          make defconfig
+
+      - name: Download package sources
+        working-directory: openwrt
+        run: make download -j$(nproc)
+
+      - name: Build OpenWrt
+        working-directory: openwrt
+        shell: bash
+        run: |
+          set -o pipefail
+          make -j$(nproc) 2>&1 | tee ../build.log || \
+            (echo "=== Build failed – retrying with verbose output ===" && \
+             make -j1 V=s 2>&1 | tee ../build-verbose.log; exit 1)
+
+      - name: Upload firmware images
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-rpi4-images
+          path: openwrt/bin/targets/bcm27xx/bcm2711/*.img.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: |
+            build.log
+            build-verbose.log
+          retention-days: 3
