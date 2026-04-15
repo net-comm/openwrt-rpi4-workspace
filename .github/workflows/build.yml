@@ -26,6 +26,7 @@ jobs:
       - name: Checkout workspace (with submodules)
         uses: actions/checkout@v4
         with:
+          token: ${{ secrets.UPSTREAM_PAT }}
           submodules: recursive
 
       - name: Install build dependencies
